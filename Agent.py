@@ -17,13 +17,13 @@ device        = 'cuda' if torch.cuda.is_available() else 'cpu'
 FAMILY_SIZE = 4
 FAMILIES = 10
 POPULATION_SIZE = FAMILIES * FAMILY_SIZE
-MIN_ROUNDS = 15
-MAX_ROUNDS = 20
+MIN_ROUNDS = 4
+MAX_ROUNDS = 6
 CHILDHOOD_YEARS = 10
 ADULTHOOD_YEARS = 5
 MEMORY_LENGTH = 2
 INPUT_DIM = 4 * MEMORY_LENGTH
-INITIAL_STRUCTURE = [['MLP', [INPUT_DIM, 16, 16, 2]]]
+INITIAL_STRUCTURE = [['MLP', [INPUT_DIM, 2]]]
 INITIAL_RUMINATION = 10
 INITIAL_LEARN_RATE = 1e-3
  
@@ -215,7 +215,7 @@ class Population:
             animal.experience = []
             animal.fitness    = 0
 
-    def step(self):
+    def step(self, report=False):
         self.childhood()
         for animal in self.animals:
             animal.experience = []
@@ -225,11 +225,20 @@ class Population:
         self.reproduce()
         self.reset_generation()
         self.generation += 1
+        if report:
+            fitnesses   = self.history[-1]['fitnesses']
+            reputations = self.history[-1]['reputations']
+            print(f"Gen {self.generation:3d} | "
+                f"fitness  mean={np.mean(fitnesses):.1f}  "
+                f"min={np.min(fitnesses):.1f}  "
+                f"max={np.max(fitnesses):.1f}  | "
+                f"coop  mean={np.mean(reputations):.2f}  "
+                f"min={np.min(reputations):.2f}  "
+                f"max={np.max(reputations):.2f}")
 
-    def run(self, n_generations):
+    def run(self, n_generations, report=False):
         for _ in range(n_generations):
-            self.step()
-            print(f"Gen {self.generation:3d} | ")
+            self.step(report=report)
         return self.history
 
     def plot(self):
@@ -253,4 +262,16 @@ def compete(animal_a, animal_b):
 
 
 # SANDBOX ---------------------------------------------------------
-#pop = Population(FAMILY_SIZE,FAMILIES,INITIAL_STRUCTURE,MEMORY_LENGTH,rumination=INITIAL_RUMINATION)
+pop = Population(
+    family_size   = 6,
+    families      = 1,
+    structure     = INITIAL_STRUCTURE,
+    memory_length = MEMORY_LENGTH,
+    prediliction  = 0.5,
+    skepticism    = 0.5,
+    rumination    = INITIAL_RUMINATION,
+    learn_rate    = INITIAL_LEARN_RATE,
+)
+print(f"Population: {pop.size} animals, "
+        f"{sum(p.numel() for p in pop.animals[0].brain.parameters())} params each")
+pop.run(10, report=True)
