@@ -14,10 +14,18 @@ device        = 'cuda' if torch.cuda.is_available() else 'cpu'
 # MIGHT NEED TO COPY TO TERMINA: C:\Users\echol\Documents\Coding\AI-practice\gpt_env\Scripts\activate
 
 #PARAMETERS-----------------------
-SIBLINGS = 3
+FAMILY_SIZE = 4
+FAMILIES = 10
+POPULATION_SIZE = FAMILIES * FAMILY_SIZE
+MIN_ROUNDS = 15
+MAX_ROUNDS = 20
 CHILDHOOD_YEARS = 10
 ADULTHOOD_YEARS = 5
 MEMORY_LENGTH = 2
+INPUT_DIM = 4 * MEMORY_LENGTH
+INITIAL_STRUCTURE = [['MLP', [INPUT_DIM, 16, 16, 2]]]
+INITIAL_RUMINATION = 10
+INITIAL_LEARN_RATE = 1e-3
  
 #PRISONERS' DILEMMA PAYOFF MATRIX----------------
 # 0 = cooperate, 1 = defect
@@ -28,6 +36,7 @@ PAYOFF = {
     (1, 1): 1,  # mutual defection
 }
 
+#THE MACHINE LEARNING BRAIN OF THE ANIMAL ----------------------------
 class Brain(nn.Module):
     BLOCK_TYPES = {
         'MLP' : MLP,
@@ -46,9 +55,10 @@ class Brain(nn.Module):
             out = block(out)
         return out
  
+ #THE ANIMALS WHO WILL COMPETE ---------------------------------------
 class Animal:
     id = 0
-    def __init__(self, structure, memory_length, prediliction, skepticism, rumination, learn_rate=1e-3, generation=0):
+    def __init__(self, structure, memory_length, prediliction=0.5, skepticism=0.5, rumination=10, learn_rate=1e-3, generation=0):
         self.id = Animal.id
         Animal.id +=1
         self.generation = generation
@@ -73,9 +83,9 @@ class Animal:
         self.rumination = rumination
         self.round = 0  #actual games played
 
-    def meet(self, opp_rep):
+    def meet(self, opp_rep, rounds):
         impression = torch.tensor(
-            [[self.reputation, opp_rep, self.prediliction, self.skepticism]],
+            [[self.reputation, opp_rep, self.prediliction, self.skepticism]] * rounds,
             dtype=torch.float32, device=self.device
         )
         self.memory = torch.cat([self.memory, impression])
@@ -84,10 +94,10 @@ class Animal:
         self.memory[-1, 2] = my_a
         self.memory[-1, 3] = opp_a
         self.round += 1
-        self.reputation = (self.reputation+1-my_a)/(self.round+1)
+        self.reputation = (self.round*self.reputation+1-my_a)/(self.round+1)
 
 
-    def forget(self):
+    def process(self):
         self.experience.append(self.memory.clone())
         self.memory = torch.tensor(
             [[0, 0, self.prediliction, self.skepticism]] * self.memory_length,
@@ -135,4 +145,112 @@ class Animal:
             loss.backward()
             self.optimiser.step()
 
+    def score(self):
+        self.fitness = sum(
+            PAYOFF[(int(game[t, 2].item()), int(game[t, 3].item()))]
+            for game in self.experience
+            for t in range(self.memory_length, len(game))
+        )
+
+# THE POPULATION ------------------------------------------------
+class Population:
+    def __init__(self, family_size, families, structure, memory_length,
+                 prediliction=0.5, skepticism=0.5, rumination=10,
+                 learn_rate=1e-3):
+
+        self.family_size = family_size
+        self.families = families
+        self.size        = family_size * families
+        self.generation  = 0
+        self.structure   = structure
+        self.memory_length = memory_length
+        self.prediliction  = prediliction
+        self.skepticism    = skepticism
+        self.rumination    = rumination
+        self.learn_rate    = learn_rate
+        self.animals = [
+            Animal(structure, memory_length, prediliction,
+                   skepticism, rumination, learn_rate)
+            for _ in range(family_size * families)
+        ]
+        self.history = []
+
+    def childhood(self):
+        animals = self.animals.copy()
+        np.random.shuffle(animals)
+
+        for i in range(0, len(animals), self.family_size):
+            family = animals[i : i + self.family_size]
+            for j in range(len(family)):
+                for k in range(j + 1, len(family)):
+                    for _ in range(CHILDHOOD_YEARS):
+                        compete(family[j], family[k])
+
+        for animal in self.animals:
+            animal.learn()
+
+    def adulthood(self):
+        for _ in range(ADULTHOOD_YEARS):
+            animals = self.animals.copy()
+            np.random.shuffle(animals)
+            for i in range(0, len(animals) - 1, 2):
+                compete(animals[i], animals[i + 1])
+
+    def score(self):
+        for animal in self.animals:
+            animal.score()
+
+    def record(self):
+        self.history.append({
+            'generation'  : self.generation,
+            'fitnesses'   : [a.fitness for a in self.animals],
+            'reputations' : [a.reputation for a in self.animals],
+        })
+
+    def reproduce(self):
+        pass
+
+    def reset_generation(self):
+        for animal in self.animals:
+            animal.experience = []
+            animal.fitness    = 0
+
+    def step(self):
+        self.childhood()
+        for animal in self.animals:
+            animal.experience = []
+        self.adulthood()
+        self.score()
+        self.record()
+        self.reproduce()
+        self.reset_generation()
+        self.generation += 1
+
+    def run(self, n_generations):
+        for _ in range(n_generations):
+            self.step()
+            print(f"Gen {self.generation:3d} | ")
+        return self.history
+
+    def plot(self):
+        pass
+
+
+# THE GAME ------------------------------------------------------------------
+def compete(animal_a, animal_b):
+    rounds = np.random.randint(MIN_ROUNDS, MAX_ROUNDS + 1)
+    animal_a.meet(animal_b.reputation, rounds)
+    animal_b.meet(animal_a.reputation, rounds)
     
+    for _ in range(rounds):
+        a = animal_a.decide()
+        b = animal_b.decide()
+        animal_a.remember(a, b)
+        animal_b.remember(b, a)
+    
+    animal_a.process()
+    animal_b.process()
+
+
+# SANDBOX ---------------------------------------------------------
+#pop = Population(FAMILY_SIZE,FAMILIES,INITIAL_STRUCTURE,MEMORY_LENGTH,rumination=INITIAL_RUMINATION)
