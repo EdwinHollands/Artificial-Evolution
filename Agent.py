@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import time
 import os
+import copy
 from Building_Blocks import MLP
 
 # USE GPU IF POSS
@@ -14,26 +15,26 @@ device        = 'cuda' if torch.cuda.is_available() else 'cpu'
 # MIGHT NEED TO COPY TO TERMINA: C:\Users\echol\Documents\Coding\AI-practice\gpt_env\Scripts\activate
 
 #PARAMETERS-----------------------
-FAMILY_SIZE = 4
-FAMILIES = 10
-POPULATION_SIZE = FAMILIES * FAMILY_SIZE
+TRIBE_SIZE = 4 #>2 for evolution
+TRIBES = 10
+POPULATION_SIZE = TRIBES * TRIBE_SIZE
 MIN_ROUNDS = 4
 MAX_ROUNDS = 6
-CHILDHOOD_YEARS = 10
+CHILDHOOD_YEARS = 5
 ADULTHOOD_YEARS = 5
 MEMORY_LENGTH = 2
-INPUT_DIM = 4 * MEMORY_LENGTH
+INPUT_DIM = 4 * MEMORY_LENGTH +2
 INITIAL_STRUCTURE = [['MLP', [INPUT_DIM, 2]]]
 INITIAL_RUMINATION = 10
 INITIAL_LEARN_RATE = 1e-3
- 
+
 #PRISONERS' DILEMMA PAYOFF MATRIX----------------
 # 0 = cooperate, 1 = defect
 PAYOFF = {
-    (0, 0): 3,  # mutual cooperation
-    (0, 1): 0,  # sucker
-    (1, 0): 5,  # exploit
-    (1, 1): 1,  # mutual defection
+    (0, 0): 1,  # mutual cooperation
+    (0, 1): -2,  # sucker
+    (1, 0): 3,  # exploit
+    (1, 1): -1,  # mutual defection
 }
 
 #THE MACHINE LEARNING BRAIN OF THE ANIMAL ----------------------------
@@ -83,19 +84,14 @@ class Animal:
         self.rumination = rumination
         self.round = 0  #actual games played
 
-    def meet(self, opp_rep, rounds):
-        impression = torch.tensor(
-            [[self.reputation, opp_rep, self.prediliction, self.skepticism]] * rounds,
+    def remember(self, my_a, opp_a, opp_rep):
+        new_row = torch.tensor(
+            [[self.reputation, opp_rep, my_a, opp_a]],
             dtype=torch.float32, device=self.device
         )
-        self.memory = torch.cat([self.memory, impression])
-
-    def remember(self, my_a, opp_a):
-        self.memory[-1, 2] = my_a
-        self.memory[-1, 3] = opp_a
+        self.memory = torch.cat([self.memory, new_row])
         self.round += 1
-        self.reputation = (self.round*self.reputation+1-my_a)/(self.round+1)
-
+        self.reputation = (self.round * self.reputation + 1 - my_a) / (self.round + 1)
 
     def process(self):
         self.experience.append(self.memory.clone())
@@ -106,11 +102,16 @@ class Animal:
         )
         self.round = 0
 
-    def decide(self):
+    def decide(self, opp_rep):
+        past = self.memory[-self.memory_length:].flatten()
+        current = torch.tensor(
+            [self.reputation, opp_rep],
+            dtype=torch.float32, device=self.device
+        )
+        flat = torch.cat([past, current])  
         self.brain.eval()
-        window = self.memory[self.round : self.round + self.memory_length]
         with torch.no_grad():
-            logits = self.brain(window.flatten())
+            logits = self.brain(flat)
             probs  = F.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).item()
     
@@ -125,8 +126,9 @@ class Animal:
                 for t in range(self.memory_length, len(game))
             )
             for t in range(self.memory_length, len(game)):
-                window = game[t-self.memory_length:t]
-                inputs.append(window.flatten())
+                past = game[t-self.memory_length:t].flatten()
+                current = game[t, :2]
+                inputs.append(torch.cat([past, current]))
                 actions.append(int(game[t, 2].item()))
                 weights.append(total)
         x = torch.stack(inputs)                                              # (T, 4*memory_length)
@@ -154,13 +156,13 @@ class Animal:
 
 # THE POPULATION ------------------------------------------------
 class Population:
-    def __init__(self, family_size, families, structure, memory_length,
+    def __init__(self, tribe_size, tribes, structure, memory_length,
                  prediliction=0.5, skepticism=0.5, rumination=10,
                  learn_rate=1e-3):
 
-        self.family_size = family_size
-        self.families = families
-        self.size        = family_size * families
+        self.tribe_size = tribe_size
+        self.tribes = tribes
+        self.size        = tribe_size * tribes
         self.generation  = 0
         self.structure   = structure
         self.memory_length = memory_length
@@ -171,7 +173,7 @@ class Population:
         self.animals = [
             Animal(structure, memory_length, prediliction,
                    skepticism, rumination, learn_rate)
-            for _ in range(family_size * families)
+            for _ in range(tribe_size * tribes)
         ]
         self.history = []
 
@@ -179,20 +181,24 @@ class Population:
         animals = self.animals.copy()
         np.random.shuffle(animals)
 
-        for i in range(0, len(animals), self.family_size):
-            family = animals[i : i + self.family_size]
-            for j in range(len(family)):
-                for k in range(j + 1, len(family)):
+        for i in range(0, len(animals), self.tribe_size):
+            tribe = animals[i : i + self.tribe_size]
+            for j in range(len(tribe)):
+                for k in range(j + 1, len(tribe)):
                     for _ in range(CHILDHOOD_YEARS):
-                        compete(family[j], family[k])
+                        compete(tribe[j], tribe[k])
 
         for animal in self.animals:
             animal.learn()
 
     def adulthood(self):
+        reps = [a.reputation for a in self.animals]
+        print(f"  Rep range at adulthood start: {min(reps):.2f} - {max(reps):.2f}")
         for _ in range(ADULTHOOD_YEARS):
             animals = self.animals.copy()
-            np.random.shuffle(animals)
+            animals = sorted(animals, 
+                key=lambda a: a.reputation, 
+                reverse=True) # sort by rep
             for i in range(0, len(animals) - 1, 2):
                 compete(animals[i], animals[i + 1])
 
@@ -217,8 +223,6 @@ class Population:
 
     def step(self, report=False):
         self.childhood()
-        for animal in self.animals:
-            animal.experience = []
         self.adulthood()
         self.score()
         self.record()
@@ -247,31 +251,11 @@ class Population:
 
 # THE GAME ------------------------------------------------------------------
 def compete(animal_a, animal_b):
-    rounds = np.random.randint(MIN_ROUNDS, MAX_ROUNDS + 1)
-    animal_a.meet(animal_b.reputation, rounds)
-    animal_b.meet(animal_a.reputation, rounds)
-    
+    rounds = np.random.randint(MIN_ROUNDS, MAX_ROUNDS + 1)    
     for _ in range(rounds):
-        a = animal_a.decide()
-        b = animal_b.decide()
-        animal_a.remember(a, b)
-        animal_b.remember(b, a)
-    
+        a = animal_a.decide(animal_b.reputation)
+        b = animal_b.decide(animal_a.reputation)
+        animal_a.remember(a, b, animal_b.reputation)
+        animal_b.remember(b, a, animal_a.reputation) 
     animal_a.process()
     animal_b.process()
-
-
-# SANDBOX ---------------------------------------------------------
-pop = Population(
-    family_size   = 6,
-    families      = 1,
-    structure     = INITIAL_STRUCTURE,
-    memory_length = MEMORY_LENGTH,
-    prediliction  = 0.5,
-    skepticism    = 0.5,
-    rumination    = INITIAL_RUMINATION,
-    learn_rate    = INITIAL_LEARN_RATE,
-)
-print(f"Population: {pop.size} animals, "
-        f"{sum(p.numel() for p in pop.animals[0].brain.parameters())} params each")
-pop.run(10, report=True)
